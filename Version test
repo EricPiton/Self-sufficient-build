@@ -1,0 +1,150 @@
++--------------------------------------------------+
+| [Heat Sources]                                   |
+|   ├── CPU: Ryzen 5 7600X                         |
+|   │   ├── Power: 20W | 70W | 140W               |
+|   │   ├── Heat: 22W | 73W | 147W                |
+|   │   ├── Voltage: 12V (1.67A | 5.83A | 11.67A)  |
+|   ├── GPU: RTX 4060 Ti                           |
+|   │   ├── Power: 30W | 100W | 200W              |
+|   │   ├── Heat: 33W | 105W | 210W               |
+|   │   ├── Voltage: 12V (2.5A | 8.33A | 16.67A)  |
+|   └── Peltier: TEC1-12715 (Idle Only)            |
+|       ├── Power: 10W | 0W | 0W                  |
+|       ├── Heat: 10W | 0W | 0W                   |
+|       ├── Voltage: 12V (0.83A | 0A | 0A)        |
+|   Total Heat: 65W | 178W | 357W                |
++--------------------------------------------------+
+          ↓ (Heat via Ferrofluid)
++--------------------------------------------------+
+| [Heat Transfer & Cooling]                        |
+|   ├── Ferrofluid Loop 1 (CPU)                   |
+|   │   ├── Components: 50 mL Ferrotec APG Ferrofluid, 2m Copper Tubing (8mm ID, 400 W/m·K) |
+|   │   ├── Heat Exchanger: EK-Quantum Kinetic FLT 360 |
+|   │   ├── Input: 22W | 73W | 147W               |
+|   │   ├── Efficiency: 95%                       |
+|   │   ├── Output: 20.9W | 69.35W | 139.65W     |
+|   ├── Ferrofluid Loop 2 (GPU + Peltier)         |
+|   │   ├── Components: 50 mL Ferrotec APG Ferrofluid, 2m Copper Tubing |
+|   │   ├── Heat Exchanger: EK-Quantum Kinetic FLT 360 |
+|   │   ├── Input: 43W | 105W | 210W             |
+|   │   ├── Efficiency: 95%                       |
+|   │   ├── Output: 40.85W | 99.75W | 199.5W     |
+|   ├── Pump: EK-D5 PWM G2                        |
+|   │   ├── Power: 3W                            |
+|   │   ├── Voltage: 12V (0.25A)                 |
+|   └── Stirling Cryocooler                       |
+|       ├── Power: 20W                           |
+|       ├── Voltage: 12V (1.67A)                 |
+|       ├── Cold Side: -80°C (ΔT = 165°C)        |
+|       ├── Efficiency: 96%                      |
+|   Total Heat to TEG: 59.9W | 164W | 329W       |
++--------------------------------------------------+
+          ↓ (Heat to TEG Hot Side)
++--------------------------------------------------+
+| [Thermoelectric Generation]                      |
+|   ├── TEG: 22x Laird PCX20                      |
+|   │   ├── Configuration: 11 series pairs in parallel |
+|   │   ├── Heat Input: 59.9W | 164W | 329W       |
+|   │   ├── Efficiency: 10% (ΔT = 165°C)          |
+|   │   ├── Raw Output: 131.78W | 360.8W | 723.8W  |
+|   │   ├── Voltage: ~10–14V (variable)           |
+|   ├── DC/DC Converter: TI LM5122                |
+|   │   ├── Input: 131.78W | 360.8W | 723.8W     |
+|   │   ├── Efficiency: 95%                      |
+|   │   ├── Output: 125.19W | 342.76W | 687.61W  |
+|   │   ├── Voltage: 12V (10.43A | 28.56A | 57.30A) |
+|   └── TEG Fan: Noctua NF-A12x25                |
+|       ├── Power: 0.5W                          |
+|       ├── Voltage: 12V (0.04A)                 |
++--------------------------------------------------+
+          ↓ (Power Flow)
++--------------------------------------------------+
+| [Power Regulation]                               |
+|   ├── Regulator: Vicor PI3740                   |
+|   │   ├── Input: 125.19W | 342.76W | 687.61W   |
+|   │   ├── Efficiency: 99%                      |
+|   │   ├── Output: 123.94W | 339.33W | 680.73W  |
+|   │   ├── Voltage: 12V (10.33A | 28.28A | 56.73A) |
+|   ├── Power IC: TI TPS65988                    |
+|   │   ├── Power: 0.15W                         |
+|   │   ├── Voltage: 12V (0.01A)                 |
+|   └── Sensors: I2C Temp + TI                   |
+|       ├── Power: 0.5W                          |
+|       ├── Voltage: 12V (0.04A)                 |
+|   Excess Power: 37.44W | 103.83W | 240.23W     |
+|   Voltage: 12V (3.12A | 8.65A | 20.02A)        |
++--------------------------------------------------+
+          ↓ (Power to Loads & Excess)
++--------------------------------------------------+
+| [Loads]                                          |
+|   ├── Motherboard: ASUS ROG Strix B650E-E       |
+|   │   ├── Power: 8W | 20W | 35W                 |
+|   │   ├── Voltage: 12V (0.67A | 1.67A | 2.92A)  |
+|   ├── CPU: Ryzen 5 7600X                       |
+|   │   ├── Power: 20W | 70W | 140W               |
+|   │   ├── Voltage: 12V (1.67A | 5.83A | 11.67A) |
+|   ├── GPU: RTX 4060 Ti                         |
+|   │   ├── Power: 30W | 100W | 200W              |
+|   │   ├── Voltage: 12V (2.5A | 8.33A | 16.67A) |
+|   ├── RAM: G.Skill Trident Z5 32GB             |
+|   │   ├── Power: 1W | 1.5W | 2W                 |
+|   │   ├── Voltage: 12V (0.08A | 0.13A | 0.17A) |
+|   ├── SSD: Samsung 990 Pro 2TB                 |
+|   │   ├── Power: 1W | 3W | 5W                   |
+|   │   ├── Voltage: 12V (0.08A | 0.25A | 0.42A) |
+|   ├── Peltier: TEC1-12715 (Idle Only)          |
+|   │   ├── Power: 10W | 0W | 0W                  |
+|   │   ├── Voltage: 12V (0.83A | 0A | 0A)       |
+|   ├── Stirling Cryocooler                      |
+|   │   ├── Power: 20W                           |
+|   │   ├── Voltage: 12V (1.67A)                 |
+|   ├── Pump: EK-D5 PWM G2                       |
+|   │   ├── Power: 3W                            |
+|   │   ├── Voltage: 12V (0.25A)                 |
+|   ├── TEG Fan: Noctua NF-A12x25               |
+|   │   ├── Power: 0.5W                          |
+|   │   ├── Voltage: 12V (0.04A)                 |
+|   ├── Case Fans: 3x Noctua NF-S12A             |
+|   │   ├── Power: 1.5W                          |
+|   │   ├── Voltage: 12V (0.13A)                 |
+|   ├── RGB: Corsair iCUE Commander              |
+|   │   ├── Power: 0.5W                          |
+|   │   ├── Voltage: 12V (0.04A)                 |
+|   ├── Sensors: I2C Temp + TI TPS65988          |
+|   │   ├── Power: 0.5W                          |
+|   │   ├── Voltage: 12V (0.04A)                 |
+|   ├── Power IC: TI TPS65988                    |
+|   │   ├── Power: 0.15W                         |
+|   │   ├── Voltage: 12V (0.01A)                 |
+|   ├── Relay (Discharger Control)               |
+|   │   ├── Power: 0.5W                          |
+|   │   ├── Voltage: 12V (0.04A)                 |
+|   Total Load: 86.5W | 235.5W | 440.5W           |
+|   Voltage: 12V (7.21A | 19.63A | 36.71A)        |
++--------------------------------------------------+
+          ↓ (Excess Power Flow)
++--------------------------------------------------+
+| [Excess Power & Storage]                         |
+|   ├── Charger: TI BQ25798                       |
+|   │   ├── Input: 37.44W | 103.83W | 240.23W    |
+|   │   ├── Efficiency: 95%                      |
+|   │   ├── Output to Battery: 35.57W | 98.64W | 228.22W |
+|   │   ├── Voltage: 12V (2.96A | 8.22A | 19.02A) |
+|   │   ├── Note: At 100%, capped at 150W (12.5A); 90.23W dissipated |
+|   ├── Battery: 600 Wh LiFePO4                  |
+|   │   ├── Usable Capacity: 570 Wh              |
+|   │   ├── Voltage: 12.8V (nominal)             |
+|   │   ├── Max Charge Rate: 150W                |
+|   │   ├── Charge Time: 16h | 5.8h | 3.8h (capped) |
+|   ├── Cell Discharger 1: Ohmite TGHG           |
+|   │   ├── Capacity: 200W                       |
+|   │   ├── Dissipated: 0W | 0W | 45.12W         |
+|   │   ├── Voltage: 12V (0A | 0A | 3.76A)       |
+|   ├── Cell Discharger 2: Ohmite TGHG (Backup)  |
+|   │   ├── Capacity: 200W                       |
+|   │   ├── Dissipated: 0W | 0W | 45.11W         |
+|   │   ├── Voltage: 12V (0A | 0A | 3.76A)       |
+|   └── Initial Boot PSU: Corsair SF300          |
+|       ├── Power Draw: 0W (post-boot)           |
++--------------------------------------------------+
+​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
