@@ -1,0 +1,499 @@
+// Function: Compute TEG Power
+// Calculates power output from thermoelectric generators (TEGs) at a specific point in the HTSPS
+// Accounts for motherboard, RAM, storage, PSU, NIC, and enhanced cooling for 2025 technology
+FUNCTION compute_teg_power(point_heat, num_tegs, teg_efficiency_nominal, flow_rate, point, model)
+    // System Constants
+    MIN_TEG_HEAT = 100 W                // Minimum heat input for TEG operation
+    MAX_TEG_HEAT = 10000 W              // Maximum heat input (adjusted for 2025 components)
+    TEG_RECOVERY_THRESHOLD = 8 W        // Minimum power output
+    MAGNET_HEAT_PULL_EFF = 0.985        // N52 magnet efficiency
+    POINT_LOSS = 0.985                  // Loss per heat transfer point
+    HEAT_TO_TEG = 0.97                  // Heat transfer to TEGs (ferrofluid)
+    REGULATOR_EFF = 0.99                // Voltage regulator efficiency
+    COOLING_PENALTY_BASE = 0.98         // Base cooling penalty (liquid + air)
+    MIN_FLOW = 0.08                     // Minimum ferrofluid flow
+    FLOW_BOOST = 1.6                    // Flow boost with N52 magnets
+    MAGNET_FLOW_PUSH_EFF = 0.995        // Flow push efficiency
+    AMBIENT_TEMP = 25 °C                // Ambient temperature
+    TEG_HOT_SIDE_MAX = 250 °C           // Max hot-side temp (realistic for 2025)
+    TEG_HOT_SIDE_MIN = 40 °C            // Min hot-side temp
+    TEG_COLD_SIDE_MIN = 15 °C           // Min cold-side temp (liquid cooling)
+    TEG_COLD_SIDE_MAX = 85 °C           // Max cold-side temp
+    TEG_EFFICIENCY_MAX = 0.15           // Max efficiency (skutterudite TEGs)
+    TEG_EFFICIENCY_MIN = 0.08           // Min efficiency
+    TEG_DEGRADATION_RATE = 0.0005       // 0.05% per 1000 thermal cycles
+    TEG_VOLTAGE_MIN = 0.4 V             // Min voltage
+    TEG_CURRENT_MIN = 0.08 A            // Min current
+    TEG_RECOVERY_ATTEMPTS_MAX = 4       // Max recovery attempts
+    COOLING_FAN_MAX = 1.5 W             // Per fan (realistic Noctua)
+    COOLING_PUMP_MAX = 8 W              // Liquid cooling pump
+    WASTE_HEAT_FAN_THRESHOLD = 40 W     // Fan activation threshold
+    MOTHERBOARD_HEAT_FACTOR = 1.15      // Heat output (1.15× power)
+    RAM_HEAT_FACTOR = 1.1               // Heat output
+    STORAGE_HEAT_FACTOR = 1.2           // Heat output
+    PSU_HEAT_FACTOR = 0.02              // Heat from PSU losses (2%)
+    NIC_HEAT_FACTOR = 1.05              // Heat output
+    TEMP_GRADIENT_MIN = 60 °C           // Min gradient for TEG operation
+    FLOW_SCALE_THRESHOLD = 1.9          // Non-linear flow scaling threshold
+    FLOW_SCALE_FACTOR = 0.45            // Diminishing returns for high flow
+    LOG_FILE = "system_status.log"      // Log file
+    TEG_CYCLE_LOG_INTERVAL = 50         // Log degradation frequently
+    MAX_COMPONENT_TEMP = 90 °C          // Max temp for components
+    NUM_POINTS = 4                      // Number of points in system (configurable)
+
+    // Local Variables
+    system_status = "Operational"       // Point-specific status
+    teg_power_total = 0 W               // Total TEG power output
+    active_tegs = num_tegs             // Operational TEGs
+    failed_tegs = 0                    // Failed TEGs
+    recovery_attempts = 0              // Per-TEG recovery attempts
+    degradation_factor = 1.0           // TEG degradation factor
+    fan_power = 0 W                    // Total fan power (0–6 W, up to 4 fans)
+    pump_power = 0 W                   // Liquid cooling pump (0–8 W)
+    waste_heat_out = 0 W               // Waste heat from prior point
+    motherboard_power = 0 W            // e.g., 25 W (home), 50 W (server)
+    ram_power = 0 W                   // e.g., 10 W (home), 40 W (server)
+    storage_power = 0 W               // e.g., 5 W (home), 15 W (server)
+    nic_power = 0 W                   // e.g., 2 W (home), 5 W (server)
+    hot_side_temp = 0 °C               // TEG hot-side temperature
+    cold_side_temp = 0 °C              // TEG cold-side temperature
+    temp_gradient = 0 °C               // TEG temperature gradient
+    effective_flow = flow_rate         // Adjusted flow rate
+    teg_efficiency = teg_efficiency_nominal  // Dynamic efficiency
+    cooling_penalty = COOLING_PENALTY_BASE  // Dynamic cooling penalty
+    heat_to_teg = 0 W                  // Heat per TEG
+    teg_power = 0 W                    // Power per TEG
+    flow_push = 0                      // Flow push for logging
+    component_heat = 0 W               // Heat from components
+    motherboard_temp = 0 °C            // Motherboard temperature
+    ram_temp = 0 °C                   // RAM temperature
+    storage_temp = 0 °C               // Storage temperature
+
+    // Step 1: Input Validation
+    IF point_heat < 0 OR num_tegs <= 0 OR flow_rate < 0 OR teg_efficiency_nominal < 0 THEN
+        log_error(LOG_FILE, "Invalid input at point " + point + ": point_heat=" + point_heat + ", num_tegs=" + num_tegs + ", flow_rate=" + flow_rate + ", efficiency=" + teg_efficiency_nominal)
+        system_status = "Fault: Invalid Input"
+        RETURN 0
+    END
+    IF point NOT IN [1, 2, 3, 4] THEN
+        log_error(LOG_FILE, "Invalid point: " + point)
+        system_status = "Fault: Invalid Point"
+        RETURN 0
+    END
+
+    // Step 2: Read System Parameters (Simulated Sensor Data)
+    fan_power = read_fan_power(point)
+    pump_power = read_pump_power(point)
+    waste_heat_out = read_waste_heat_out(point)
+    motherboard_power = read_motherboard_power(point)
+    ram_power = read_ram_power(point)
+    storage_power = read_storage_power(point)
+    nic_power = read_nic_power(point)
+
+    // Step 3: Validate Ferrofluid Flow
+    IF flow_rate < MIN_FLOW THEN
+        log_error(LOG_FILE, "Critical: Low ferrofluid flow at point " + point + ": Flow=" + flow_rate + " (Min=" + MIN_FLOW + ")")
+        system_status = "Fault: Low Ferrofluid Flow"
+        RETURN 0
+    END
+    // Non-linear flow scaling
+    IF flow_rate > FLOW_SCALE_THRESHOLD THEN
+        effective_flow = FLOW_BOOST + FLOW_SCALE_FACTOR * (flow_rate - FLOW_BOOST)
+    ELSE
+        effective_flow = MIN(flow_rate, FLOW_BOOST)
+    END
+    log_status(LOG_FILE, "Point " + point + ": Input flow=" + flow_rate + ", Effective flow=" + effective_flow)
+
+    // Step 4: Incorporate Component Heat
+    IF point == 1 THEN  // CPU + Waste Heat + Motherboard + RAM
+        component_heat = (motherboard_power * MOTHERBOARD_HEAT_FACTOR) + (ram_power * RAM_HEAT_FACTOR)
+        point_heat = point_heat + component_heat
+        log_status(LOG_FILE, "Point " + point + ": Added component heat=" + component_heat + " W (Motherboard=" + motherboard_power + " W, RAM=" + ram_power + " W)")
+    ELSE IF point == 3 THEN  // GPU + Storage + NIC
+        component_heat = (storage_power * STORAGE_HEAT_FACTOR) + (nic_power * NIC_HEAT_FACTOR)
+        point_heat = point_heat + component_heat
+        log_status(LOG_FILE, "Point " + point + ": Added component heat=" + component_heat + " W (Storage=" + storage_power + " W, NIC=" + nic_power + " W)")
+    END
+    // PSU heat distributed across all points
+    psu_heat = (motherboard_power + ram_power + storage_power + nic_power) * PSU_HEAT_FACTOR / NUM_POINTS
+    point_heat = point_heat + psu_heat
+    log_status(LOG_FILE, "Point " + point + ": Added PSU heat=" + psu_heat + " W")
+
+    // Step 5: Validate Heat Input
+    IF point_heat < MIN_TEG_HEAT THEN
+        log_warning(LOG_FILE, "Insufficient heat at point " + point + ": Heat=" + point_heat + " W (Min=" + MIN_TEG_HEAT + " W)")
+        system_status = "Degraded: Low Heat Input"
+        RETURN 0
+    END
+    IF point_heat > MAX_TEG_HEAT THEN
+        log_warning(LOG_FILE, "Excessive heat at point " + point + ": Heat=" + point_heat + " W, capped at " + MAX_TEG_HEAT + " W")
+        point_heat = MAX_TEG_HEAT
+    END
+
+    // Step 6: Calculate Component Temperatures
+    IF point == 1 THEN
+        motherboard_temp = estimate_component_temp(motherboard_power * MOTHERBOARD_HEAT_FACTOR, "Ferrofluid+Liquid")
+        ram_temp = estimate_component_temp(ram_power * RAM_HEAT_FACTOR, "Ferrofluid+Air")
+        IF motherboard_temp > MAX_COMPONENT_TEMP THEN
+            log_error(LOG_FILE, "Motherboard overheating at point " + point + ": Temp=" + motherboard_temp + "°C")
+            system_status = "Fault: Motherboard Overheat"
+            RETURN 0
+        END
+        IF ram_temp > MAX_COMPONENT_TEMP THEN
+            log_error(LOG_FILE, "RAM overheating at point " + point + ": Temp=" + ram_temp + "°C")
+            system_status = "Fault: RAM Overheat"
+            RETURN 0
+        END
+    ELSE IF point == 3 THEN
+        storage_temp = estimate_component_temp(storage_power * STORAGE_HEAT_FACTOR, "Ferrofluid+Air")
+        IF storage_temp > MAX_COMPONENT_TEMP THEN
+            log_error(LOG_FILE, "Storage overheating at point " + point + ": Temp=" + storage_temp + "°C")
+            system_status = "Fault: Storage Overheat"
+            RETURN 0
+        END
+    END
+    log_status(LOG_FILE, "Point " + point + ": Motherboard temp=" + motherboard_temp + "°C, RAM temp=" + ram_temp + "°C, Storage temp=" + storage_temp + "°C")
+
+    // Step 7: Calculate TEG Temperatures
+    hot_side_temp = TEG_HOT_SIDE_MIN + (point_heat / MAX_TEG_HEAT) * (TEG_HOT_SIDE_MAX - TEG_HOT_SIDE_MIN)
+    hot_side_temp = MIN(TEG_HOT_SIDE_MAX, MAX(TEG_HOT_SIDE_MIN, hot_side_temp))
+    cold_side_temp = AMBIENT_TEMP + 3  // Base increase from system heat
+    IF pump_power > 0 THEN
+        cold_side_temp = cold_side_temp - (pump_power / COOLING_PUMP_MAX) * 5  // Liquid cooling reduces temp
+    END
+    IF fan_power > 0 THEN
+        cold_side_temp = cold_side_temp - (fan_power / (4 * COOLING_FAN_MAX)) * 2  // Fans reduce temp
+    END
+    IF waste_heat_out > WASTE_HEAT_FAN_THRESHOLD THEN
+        cold_side_temp = cold_side_temp + (waste_heat_out / 800) * 1.5  // Waste heat increases temp
+    END
+    cold_side_temp = MAX(TEG_COLD_SIDE_MIN, MIN(TEG_COLD_SIDE_MAX, cold_side_temp))
+    temp_gradient = hot_side_temp - cold_side_temp
+    IF temp_gradient < TEMP_GRADIENT_MIN THEN
+        log_warning(LOG_FILE, "Low TEG gradient at point " + point + ": Gradient=" + temp_gradient + "°C (Min=" + TEMP_GRADIENT_MIN + "°C)")
+        system_status = "Degraded: Low TEG Gradient"
+        RETURN 0
+    END
+    log_status(LOG_FILE, "Point " + point + ": Hot-side temp=" + hot_side_temp + "°C, Cold-side temp=" + cold_side_temp + "°C, Gradient=" + temp_gradient + "°C")
+
+    // Step 8: Calculate Dynamic TEG Efficiency
+    efficiency_factor = (temp_gradient / 200) * (point_heat / (point_heat + 600))  // Normalize to 200°C, 600 W
+    teg_efficiency = teg_efficiency_nominal * efficiency_factor * degradation_factor
+    teg_efficiency = MAX(TEG_EFFICIENCY_MIN, MIN(TEG_EFFICIENCY_MAX, teg_efficiency))
+    IF teg_efficiency < TEG_EFFICIENCY_MIN * 1.3 THEN
+        log_warning(LOG_FILE, "Low TEG efficiency at point " + point + ": Efficiency=" + (teg_efficiency * 100) + "%")
+    END
+    log_status(LOG_FILE, "Point " + point + ": TEG efficiency=" + (teg_efficiency * 100) + "% (Nominal=" + (teg_efficiency_nominal * 100) + "%, Degradation=" + (degradation_factor * 100) + "%)")
+
+    // Step 9: Calculate Dynamic Cooling Penalty
+    cooling_penalty = COOLING_PENALTY_BASE
+    IF waste_heat_out > WASTE_HEAT_FAN_THRESHOLD THEN
+        cooling_penalty = cooling_penalty * (1 - 0.02 * (waste_heat_out / 80))  // Waste heat penalty
+    END
+    IF pump_power > 0 THEN
+        cooling_penalty = cooling_penalty * (1 + 0.015 * (pump_power / COOLING_PUMP_MAX))  // Pump benefit
+    END
+    IF fan_power > 0 THEN
+        cooling_penalty = cooling_penalty * (1 + 0.008 * (fan_power / (4 * COOLING_FAN_MAX)))  // Fan benefit
+    END
+    cooling_penalty = MAX(0.965, MIN(0.98, cooling_penalty))  // Cap to avoid unrealistic boosts
+    log_status(LOG_FILE, "Point " + point + ": Cooling penalty=" + cooling_penalty + ", Pump power=" + pump_power + " W, Fan power=" + fan_power + " W")
+
+    // Step 10: Process Each TEG
+    FOR i = 1 TO num_tegs
+        teg_voltage = check_teg_voltage(point, i, "Analog Devices AD5940")
+        teg_current = check_teg_current(point, i, "INA226")
+        teg_health = (teg_voltage >= TEG_VOLTAGE_MIN) AND (teg_current >= TEG_CURRENT_MIN)
+        recovery_attempts = 0
+        IF NOT teg_health THEN
+            log_warning(LOG_FILE, "TEG " + i + " at point " + point + ": Unhealthy (Voltage=" + teg_voltage + " V, Current=" + teg_current + " A)")
+            failed_tegs = failed_tegs + 1
+            WHILE recovery_attempts < TEG_RECOVERY_ATTEMPTS_MAX
+                IF attempt_teg_recovery(point, i, effective_flow, pump_power) THEN
+                    log_status(LOG_FILE, "TEG " + i + " at point " + point + " recovered after attempt " + (recovery_attempts + 1))
+                    heat_to_teg = point_heat * MAGNET_HEAT_PULL_EFF * effective_flow / num_tegs
+                    teg_power = calculate_teg_power_single(heat_to_teg, teg_efficiency, cooling_penalty)
+                    teg_power = teg_power * 0.7  // Reduced power post-recovery
+                    teg_power_total = teg_power_total + teg_power
+                    BREAK
+                END
+                recovery_attempts = recovery_attempts + 1
+            END
+            IF recovery_attempts >= TEG_RECOVERY_ATTEMPTS_MAX THEN
+                log_error(LOG_FILE, "TEG " + i + " at point " + point + " failed after " + TEG_RECOVERY_ATTEMPTS_MAX + " attempts")
+                active_tegs = active_tegs - 1
+                CONTINUE
+            END
+        END
+        heat_to_teg = point_heat * MAGNET_HEAT_PULL_EFF * effective_flow / num_tegs
+        teg_power = calculate_teg_power_single(heat_to_teg, teg_efficiency, cooling_penalty)
+        IF teg_power < TEG_RECOVERY_THRESHOLD THEN
+            log_warning(LOG_FILE, "TEG " + i + " at point " + point + ": Low output=" + teg_power + " W (Min=" + TEG_RECOVERY_THRESHOLD + " W)")
+            IF attempt_teg_recovery(point, i, effective_flow, pump_power) THEN
+                teg_power = teg_power * 0.7
+            ELSE
+                active_tegs = active_tegs - 1
+                CONTINUE
+            END
+        END
+        teg_power_total = teg_power_total + teg_power
+        log_status(LOG_FILE, "TEG " + i + " at point " + point + ": Power=" + teg_power + " W, Voltage=" + teg_voltage + " V, Current=" + teg_current + " A")
+    END
+
+    // Step 11: Handle TEG Failure Scenarios
+    IF active_tegs == 0 THEN
+        log_error(LOG_FILE, "All TEGs failed at point " + point + ", model=" + model)
+        system_status = "Fault: Total TEG Failure"
+        IF recover_from_fault("TEG Failure", point) THEN
+            heat_to_teg = point_heat * MAGNET_HEAT_PULL_EFF * effective_flow
+            teg_power_total = heat_to_teg * POINT_LOSS * HEAT_TO_TEG * TEG_EFFICIENCY_MIN * REGULATOR_EFF * cooling_penalty
+            active_tegs = 1
+            log_status(LOG_FILE, "Fallback: Point " + point + " using 1 virtual TEG at min efficiency")
+        ELSE
+            RETURN 0
+        END
+    ELSE IF active_tegs < num_tegs THEN
+        log_warning(LOG_FILE, "Partial TEG failure at point " + point + ": " + active_tegs + "/" + num_tegs + " active")
+        system_status = "Degraded: Partial TEG Failure"
+    END
+
+    // Step 12: Predictive Maintenance
+    IF degradation_factor < 0.97 THEN
+        log_warning(LOG_FILE, "TEG degradation at point " + point + ": Efficiency=" + (degradation_factor * 100) + "%")
+    END
+
+    // Step 13: Log Final Status
+    flow_push = MAGNET_FLOW_PUSH_EFF * effective_flow
+    log_status(LOG_FILE, model + " at point " + point + ": Total Power=" + teg_power_total + " W, Active TEGs=" + active_tegs + "/" + num_tegs + ", Efficiency=" + (teg_efficiency * 100) + "%, Flow Push=" + flow_push + ", Gradient=" + temp_gradient + "°C, Cooling Penalty=" + cooling_penalty)
+
+    // Step 14: Return Total Power
+    RETURN teg_power_total
+END
+
+// Sub-Function: Calculate Power for a Single TEG
+FUNCTION calculate_teg_power_single(heat_to_teg, teg_efficiency, cooling_penalty)
+    teg_power = heat_to_teg * POINT_LOSS * HEAT_TO_TEG * teg_efficiency * REGULATOR_EFF * cooling_penalty
+    RETURN MAX(0, teg_power)
+END
+
+// Sub-Function: Check TEG Voltage
+FUNCTION check_teg_voltage(point, teg_id, sensor)
+    // Simulate reading voltage from Analog Devices AD5940 sensor
+    // In a real system, this would interface with hardware
+    base_voltage = 0.5 + (point_heat / MAX_TEG_HEAT) * 1.5  // Linear approximation
+    noise = random(-0.05, 0.05)  // Simulate sensor noise
+    voltage = base_voltage + noise
+    IF voltage < TEG_VOLTAGE_MIN THEN
+        voltage = 0.3  // Simulate failure condition
+    END
+    RETURN MAX(0, MIN(2.0, voltage))  // Cap between 0–2 V
+END
+
+// Sub-Function: Check TEG Current
+FUNCTION check_teg_current(point, teg_id, sensor)
+    // Simulate reading current from INA226 sensor
+    // In a real system, this would interface with hardware
+    base_current = 0.1 + (point_heat / MAX_TEG_HEAT) * 0.5  // Linear approximation
+    noise = random(-0.02, 0.02)  // Simulate sensor noise
+    current = base_current + noise
+    IF current < TEG_CURRENT_MIN THEN
+        current = 0.05  // Simulate failure condition
+    END
+    RETURN MAX(0, MIN(1.0, current))  // Cap between 0–1 A
+END
+
+// Sub-Function: Attempt TEG Recovery
+FUNCTION attempt_teg_recovery(point, teg_id, flow_rate, pump_power)
+    // Attempt 1: Reduce TEG Load
+    adjust_teg_load(point, teg_id, 0.4)
+    teg_voltage = check_teg_voltage(point, teg_id, "Analog Devices AD5940")
+    teg_current = check_teg_current(point, teg_id, "INA226")
+    IF (teg_voltage >= TEG_VOLTAGE_MIN) AND (teg_current >= TEG_CURRENT_MIN) THEN
+        log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + " recovered by reducing load to 40%")
+        RETURN True
+    END
+    // Attempt 2: Increase Ferrofluid Flow
+    new_flow_rate = MIN(FLOW_BOOST + 0.25, 1.8)
+    adjust_flow_rate(point, new_flow_rate)
+    log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + ": Increased flow to " + new_flow_rate)
+    teg_voltage = check_teg_voltage(point, teg_id, "Analog Devices AD5940")
+    teg_current = check_teg_current(point, teg_id, "INA226")
+    IF (teg_voltage >= TEG_VOLTAGE_MIN) AND (teg_current >= TEG_CURRENT_MIN) THEN
+        log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + " recovered with flow=" + new_flow_rate)
+        RETURN True
+    END
+    // Attempt 3: Increase Cooling
+    IF pump_power < COOLING_PUMP_MAX THEN
+        new_pump_power = MIN(pump_power + 2, COOLING_PUMP_MAX)
+        adjust_pump_power(point, new_pump_power)
+        log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + ": Increased pump power to " + new_pump_power)
+        teg_voltage = check_teg_voltage(point, teg_id, "Analog Devices AD5940")
+        teg_current = check_teg_current(point, teg_id, "INA226")
+        IF (teg_voltage >= TEG_VOLTAGE_MIN) AND (teg_current >= TEG_CURRENT_MIN) THEN
+            log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + " recovered with enhanced cooling")
+            RETURN True
+        END
+    END
+    // Attempt 4: Power Cycle
+    reset_teg(point, teg_id, "Power cycle")
+    teg_voltage = check_teg_voltage(point, teg_id, "Analog Devices AD5940")
+    teg_current = check_teg_current(point, teg_id, "INA226")
+    IF (teg_voltage >= TEG_VOLTAGE_MIN) AND (teg_current >= TEG_CURRENT_MIN) THEN
+        log_status(LOG_FILE, "TEG " + teg_id + " at point " + point + " recovered after power cycle")
+        RETURN True
+    END
+    log_error(LOG_FILE, "TEG " + teg_id + " at point " + point + " recovery failed")
+    RETURN False
+END
+
+// Sub-Function: Estimate Component Temperature
+FUNCTION estimate_component_temp(heat_input, cooling)
+    thermal_resistance = 0.5  // °C/W, base thermal resistance
+    IF cooling contains "Liquid" THEN
+        thermal_resistance = thermal_resistance * 0.6
+    END
+    IF cooling contains "Ferrofluid" THEN
+        thermal_resistance = thermal_resistance * 0.7
+    END
+    IF cooling contains "Air" THEN
+        thermal_resistance = thermal_resistance * 0.9
+    END
+    base_temp = AMBIENT_TEMP + (heat_input * thermal_resistance)
+    RETURN MAX(AMBIENT_TEMP, base_temp)
+END
+
+// Sub-Function: Read Fan Power
+FUNCTION read_fan_power(point)
+    // Simulate fan power based on point and heat
+    IF point == 1 OR point == 3 THEN
+        RETURN 4 * COOLING_FAN_MAX * 0.5  // 50% fan speed for active points
+    END
+    RETURN 0  // No fans for other points
+END
+
+// Sub-Function: Read Pump Power
+FUNCTION read_pump_power(point)
+    // Simulate pump power (active for liquid cooling points)
+    IF point == 1 THEN
+        RETURN COOLING_PUMP_MAX * 0.7  // 70% pump speed for CPU
+    END
+    RETURN 0
+END
+
+// Sub-Function: Read Waste Heat Out
+FUNCTION read_waste_heat_out(point)
+    // Simulate waste heat from prior point
+    IF point > 1 THEN
+        RETURN 100 * (point - 1)  // Linear increase per point
+    END
+    RETURN 0
+END
+
+// Sub-Function: Read Motherboard Power
+FUNCTION read_motherboard_power(point)
+    IF point == 1 THEN
+        RETURN 50 W  // Server-grade motherboard
+    END
+    RETURN 0
+END
+
+// Sub-Function: Read RAM Power
+FUNCTION read_ram_power(point)
+    IF point == 1 THEN
+        RETURN 40 W  // High-performance RAM
+    END
+    RETURN 0
+END
+
+// Sub-Function: Read Storage Power
+FUNCTION read_storage_power(point)
+    IF point == 3 THEN
+        RETURN 15 W  // NVMe SSDs
+    END
+    RETURN 0
+END
+
+// Sub-Function: Read NIC Power
+FUNCTION read_nic_power(point)
+    IF point == 3 THEN
+        RETURN 5 W  // High-speed NIC
+    END
+    RETURN 0
+END
+
+// Sub-Function: Adjust TEG Load
+FUNCTION adjust_teg_load(point, teg_id, reduction)
+    // Simulate reducing TEG load
+    log_status(LOG_FILE, "Adjusting TEG " + teg_id + " at point " + point + " to " + (reduction * 100) + "% load")
+    RETURN True
+END
+
+// Sub-Function: Adjust Flow Rate
+FUNCTION adjust_flow_rate(point, new_flow_rate)
+    // Simulate adjusting ferrofluid flow
+    log_status(LOG_FILE, "Adjusting flow rate at point " + point + " to " + new_flow_rate)
+    RETURN True
+END
+
+// Sub-Function: Adjust Pump Power
+FUNCTION adjust_pump_power(point, new_pump_power)
+    // Simulate adjusting pump power
+    log_status(LOG_FILE, "Adjusting pump power at point " + point + " to " + new_pump_power + " W")
+    RETURN True
+END
+
+// Sub-Function: Reset TEG
+FUNCTION reset_teg(point, teg_id, method)
+    // Simulate TEG reset
+    log_status(LOG_FILE, "Resetting TEG " + teg_id + " at point " + point + " using " + method)
+    RETURN True
+END
+
+// Sub-Function: Recover from Fault
+FUNCTION recover_from_fault(fault_type, point)
+    // Simulate fault recovery
+    IF fault_type == "TEG Failure" THEN
+        log_status(LOG_FILE, "Attempting recovery from " + fault_type + " at point " + point)
+        RETURN True  // Assume recovery possible
+    END
+    RETURN False
+END
+
+// Sub-Function: Log Error
+FUNCTION log_error(file, message)
+    // Simulate writing error to log file
+    timestamp = get_current_timestamp()
+    write_to_file(file, timestamp + " [ERROR] " + message)
+END
+
+// Sub-Function: Log Warning
+FUNCTION log_warning(file, message)
+    // Simulate writing warning to log file
+    timestamp = get_current_timestamp()
+    write_to_file(file, timestamp + " [WARNING] " + message)
+END
+
+// Sub-Function: Log Status
+FUNCTION log_status(file, message)
+    // Simulate writing status to log file
+    timestamp = get_current_timestamp()
+    write_to_file(file, timestamp + " [STATUS] " + message)
+END
+
+// Sub-Function: Write to File (Placeholder)
+FUNCTION write_to_file(file, message)
+    // Simulate file write (in real system, append to file)
+    print("Writing to " + file + ": " + message)
+END
+
+// Sub-Function: Get Current Timestamp (Placeholder)
+FUNCTION get_current_timestamp()
+    // Simulate timestamp
+    RETURN "2025-05-12 12:00:00"
+END
+
+// Sub-Function: Random Number Generator (Placeholder)
+FUNCTION random(min_val, max_val)
+    // Simulate random number between min_val and max_val
+    RETURN min_val + (max_val - min_val) * 0.5  // Simplified for determinism
+END
